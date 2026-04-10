@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "717245853926",
+    "project_id": "smartbowl-b9c86",
+    "storage_bucket": "smartbowl-b9c86.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:717245853926:android:4522e663c17286e92b8b27",
+        "android_client_info": {
+          "package_name": "com.example.smartbowl"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC_glagJd3Ztzq8W_9JNBpnoIm6ZNLFyrE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
