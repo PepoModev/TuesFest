@@ -4,6 +4,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:percent_indicator/circular_percent_indicator.dart'; // Трябва да го имаш в pubspec.yaml
+import 'package:intl/intl.dart';
 import 'dart:async';
 
 void main() async {
@@ -304,7 +306,7 @@ class ForgotPasswordScreen extends StatelessWidget {
   }
 }
 
-// --- ГЛАВНА СТРАНИЦА ---
+// --- ГЛАВНА СТРАНИЦА (ОБНОВЕНА С УМНА ЛОГИКА) ---
 class MainDashboard extends StatefulWidget {
   final String owner;
   final String petType;
@@ -316,9 +318,10 @@ class MainDashboard extends StatefulWidget {
 }
 
 class _MainDashboardState extends State<MainDashboard> {
-  int waterLevel = 0; 
+  double waterLevel = 0.0; 
+  double lastRecordedLevel = -1.0; 
   String uid = FirebaseAuth.instance.currentUser!.uid;
-  bool _hasShownLowWaterAlert = false; // Флаг, за да не показваме алерта постоянно
+  bool _hasShownLowWaterAlert = false;
 
   @override
   void initState() {
@@ -328,50 +331,82 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 
   void _setupRealtimeUpdates() {
+    // Слушаме Firebase Realtime Database за промени в процентите
     FirebaseDatabase.instance.ref("users/$uid/waterLevel").onValue.listen((event) {
       final data = event.snapshot.value;
       if (data != null) {
-        int newLevel = int.parse(data.toString());
+        double newLevel = double.parse(data.toString());
+        
+        // Викаме логиката за сравнение преди да обновим UI
+        _checkWaterChange(newLevel);
+
         setState(() {
           waterLevel = newLevel;
         });
 
-        // Проверка за изскачащо съобщение
+        // Проверка за критично ниско ниво
         if (waterLevel <= 10 && !_hasShownLowWaterAlert) {
           _showLowWaterDialog();
           _hasShownLowWaterAlert = true;
         } else if (waterLevel > 10) {
-          _hasShownLowWaterAlert = false; // Рестартираме флага, ако е долято
+          _hasShownLowWaterAlert = false;
         }
       }
     });
   }
 
-  // Функция за изскачащия прозорец
+  // УМНА ЛОГИКА ЗА СРАВНЕНИЕ
+  void _checkWaterChange(double newLevel) async {
+    if (lastRecordedLevel == -1.0) {
+      lastRecordedLevel = newLevel;
+      return;
+    }
+
+    String? eventMessage;
+    DateTime now = DateTime.now();
+    String timeStr = DateFormat('HH:mm').format(now);
+    String dateStr = DateFormat('dd.MM').format(now);
+
+    // Ако нивото е паднало (Кучето е пило) - праг 2% шум
+    if (newLevel < (lastRecordedLevel - 2.0)) {
+      double diff = lastRecordedLevel - newLevel;
+      eventMessage = "${widget.petName} изпи ${diff.toStringAsFixed(1)}% вода в $timeStr на $dateStr";
+    } 
+    // Ако нивото се е вдигнало (Налята е вода) - праг 5%
+    else if (newLevel > (lastRecordedLevel + 5.0)) {
+      eventMessage = "Купата беше налята от ${lastRecordedLevel.toStringAsFixed(0)}% до ${newLevel.toStringAsFixed(0)}% в $timeStr";
+    }
+
+    if (eventMessage != null) {
+      // Записваме в Firestore историята
+      await FirebaseFirestore.instance
+          .collection("users")
+          .doc(uid)
+          .collection("history")
+          .add({
+        "label": eventMessage,
+        "timestamp": FieldValue.serverTimestamp(),
+        "amount": (lastRecordedLevel - newLevel).abs().toStringAsFixed(1)
+      });
+      
+      lastRecordedLevel = newLevel;
+    }
+  }
+
   void _showLowWaterDialog() {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            Icon(Icons.warning_amber_rounded, color: Colors.red, size: 30),
-            SizedBox(width: 10),
-            Text("Внимание!"),
-          ],
-        ),
-        content: Text("Водата на ${widget.petName} е на привършване ($waterLevel%). Моля, долейте купата!"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text("РАЗБРАХ", style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
+        title: Row(children: [Icon(Icons.warning, color: Colors.red), SizedBox(width: 10), Text("Внимание!")]),
+        content: Text("Водата на ${widget.petName} е на привършване (${waterLevel.toStringAsFixed(0)}%)!"),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: Text("РАЗБРАХ"))],
       ),
     );
   }
 
   void _cleanOldHistory() async {
+    // Изтрива всичко по-старо от 48 часа (както поиска)
     DateTime threshold = DateTime.now().subtract(const Duration(hours: 48));
     var snapshot = await FirebaseFirestore.instance
         .collection("users")
@@ -394,73 +429,60 @@ class _MainDashboardState extends State<MainDashboard> {
             children: [
               Padding(
                 padding: const EdgeInsets.all(25),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text("Здравей, ${widget.owner}! 🐾", style: const TextStyle(fontSize: 30, color: Colors.white, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 5),
-                    Text("Твоето ${widget.petType} се казва ${widget.petName}",
-                      style: TextStyle(color: Colors.white.withOpacity(0.9), fontSize: 16)),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text("Здравей, ${widget.owner}!", style: const TextStyle(fontSize: 24, color: Colors.white, fontWeight: FontWeight.bold)),
+                        Text("${widget.petName} е жаден 🐾", style: TextStyle(color: Colors.white70)),
+                      ],
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.logout, color: Colors.white),
+                      onPressed: () async {
+                        await FirebaseAuth.instance.signOut();
+                        Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => LoginScreen()));
+                      },
+                    )
                   ],
                 ),
               ),
               Expanded(
                 child: Container(
                   width: double.infinity,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.95),
-                    borderRadius: const BorderRadius.only(topLeft: Radius.circular(40), topRight: Radius.circular(40))
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.only(topLeft: Radius.circular(40), topRight: Radius.circular(40))
                   ),
                   child: SingleChildScrollView(
                     padding: const EdgeInsets.all(30),
                     child: Column(
                       children: [
-                        // Визуално предупреждение в самия интерфейс
-                        if (waterLevel <= 10)
-                          Container(
-                            margin: const EdgeInsets.only(bottom: 20),
-                            padding: const EdgeInsets.all(15),
-                            decoration: BoxDecoration(
-                              color: Colors.red[50],
-                              borderRadius: BorderRadius.circular(15),
-                              border: Border.all(color: Colors.redAccent),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.error_outline, color: Colors.redAccent),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Text(
-                                    "Критично ниско ниво на водата!",
-                                    style: TextStyle(color: Colors.red[900], fontWeight: FontWeight.bold),
-                                  ),
-                                ),
-                              ],
-                            ),
+                        // ИНТЕЛИГЕНТЕН КРЪГ
+                        CircularPercentIndicator(
+                          radius: 100.0,
+                          lineWidth: 15.0,
+                          animation: true,
+                          animateFromLastPercent: true,
+                          percent: (waterLevel / 100).clamp(0.0, 1.0),
+                          center: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text("${waterLevel.toStringAsFixed(0)}%", style: TextStyle(fontSize: 35, fontWeight: FontWeight.bold, color: waterLevel <= 10 ? Colors.red : Colors.blue)),
+                              Text("Ниво", style: TextStyle(color: Colors.grey)),
+                            ],
                           ),
-
-                        Stack(
-                          alignment: Alignment.center,
-                          children: [
-                            SizedBox(
-                              width: 180,
-                              height: 180,
-                              child: CircularProgressIndicator(
-                                value: waterLevel / 100.0,
-                                strokeWidth: 12,
-                                backgroundColor: Colors.blue[100],
-                                valueColor: AlwaysStoppedAnimation<Color>(waterLevel <= 10 ? Colors.red : Colors.blue)
-                              )
-                            ),
-                            Column(children: [
-                              Text("$waterLevel%", style: const TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: Colors.blue)),
-                              Text("Вода в купата", style: TextStyle(color: Colors.grey[600])),
-                            ]),
-                          ],
+                          circularStrokeCap: CircularStrokeCap.round,
+                          progressColor: waterLevel <= 10 ? Colors.redAccent : Colors.blueAccent,
+                          backgroundColor: Colors.blue.withOpacity(0.1),
                         ),
-                        const SizedBox(height: 40),
-                        const Align(alignment: Alignment.centerLeft, child: Text("История (последни 48ч)", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
                         
+                        const SizedBox(height: 40),
+                        const Align(alignment: Alignment.centerLeft, child: Text("История на активностите", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+                        const Divider(),
+
                         StreamBuilder<QuerySnapshot>(
                           stream: FirebaseFirestore.instance
                               .collection("users")
@@ -469,35 +491,32 @@ class _MainDashboardState extends State<MainDashboard> {
                               .orderBy("timestamp", descending: true)
                               .snapshots(),
                           builder: (context, snapshot) {
-                            if (!snapshot.hasData) return const Text("Зареждане...");
-                            if (snapshot.data!.docs.isEmpty) return const Padding(
-                              padding: EdgeInsets.only(top: 20),
-                              child: Text("Няма записи за пиене."),
+                            if (!snapshot.hasData) return CircularProgressIndicator();
+                            if (snapshot.data!.docs.isEmpty) return Padding(
+                              padding: const EdgeInsets.all(20.0),
+                              child: Text("Все още няма събития."),
                             );
+
                             return ListView.builder(
                               shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
+                              physics: NeverScrollableScrollPhysics(),
                               itemCount: snapshot.data!.docs.length,
                               itemBuilder: (context, index) {
-                                var data = snapshot.data!.docs[index];
-                                return ListTile(
-                                  leading: const Icon(Icons.history, color: Colors.blue),
-                                  title: Text(data["label"] ?? "Пиене на вода"), 
-                                  trailing: Text("${data["amount"]} мл"), 
+                                var doc = snapshot.data!.docs[index];
+                                bool isRefill = doc["label"].toString().contains("налята");
+                                return Card(
+                                  elevation: 0,
+                                  color: isRefill ? Colors.green[50] : Colors.blue[50],
+                                  margin: EdgeInsets.symmetric(vertical: 5),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                                  child: ListTile(
+                                    leading: Icon(isRefill ? Icons.add_circle : Icons.opacity, color: isRefill ? Colors.green : Colors.blue),
+                                    title: Text(doc["label"], style: TextStyle(fontSize: 14)),
+                                  ),
                                 );
                               },
                             );
                           },
-                        ),
-                        
-                        const SizedBox(height: 40),
-                        ElevatedButton(
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-                          onPressed: () async {
-                            await FirebaseAuth.instance.signOut();
-                            Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => LoginScreen()));
-                          },
-                          child: const Text("ИЗХОД", style: TextStyle(color: Colors.white))
                         ),
                       ],
                     ),
