@@ -6,8 +6,8 @@ import urequests
 from machine import Pin
 
 
-WIFI_SSID = "Modev-ap10"
-WIFI_PASS = "1985im1985"
+WIFI_SSID = "Пепи A34"
+WIFI_PASS = "12345qwery"
 FIREBASE_URL = "https://smartbowl-b9c86-default-rtdb.europe-west1.firebasedatabase.app"
 USER_UID = "mla9qS3SQtM9HaHNbt0wzwANhjP2"
 
