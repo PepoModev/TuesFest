@@ -18,7 +18,7 @@ pd_sck = Pin(22, Pin.OUT)
 
 BASE_RAW = 141900   
 FACTOR = 110.3      
-OFFSET = 48         # Тв
+OFFSET = 48         
 
 def read_hx711():
     data = 0
@@ -85,7 +85,7 @@ while True:
         diff = raw_val - BASE_RAW
         weight_calculated = (diff / FACTOR) + 192
         
-        # 3. Прилагаме твоята корекция
+        # 3. Прилагаме на корекция
         final_weight = weight_calculated + OFFSET
         
         # 4. Смятаме процентите (192г до 366г -> общо 174г)
