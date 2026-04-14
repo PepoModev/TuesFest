@@ -1,102 +1,112 @@
 
+    
 import time
-import machine
-from hx711 import HX711
 import network
 import urequests
-import json
-from machine  import Pin
+from machine import Pin
 
-# --- КОНФИГУРАЦИЯ ---
-WIFI_SSID = "Modev-ap10"      # Сложи името на твоя интернет
-WIFI_PASS = "1985im1985"         # Сложи паролата за интернета
 
-# Firebase URL (вземи го от Firebase Console -> Realtime Database)
+WIFI_SSID = "Modev-ap10"
+WIFI_PASS = "1985im1985"
 FIREBASE_URL = "https://smartbowl-b9c86-default-rtdb.europe-west1.firebasedatabase.app"
-USER_UID = "mla9qS3SQtM9HaHNbt0wzwANhjP2"    # Твоят UID от Authentication таба
+USER_UID = "mla9qS3SQtM9HaHNbt0wzwANhjP2"
 
-# Настройки на кантара (тези ги нагласи според твоите тестове)
-CALIBRATION_FACTOR = 145.0  
-CUP_EMPTY = 192.0          
-WATER_FULL_CAPACITY = 366.0 
 
-# --- ИНИЦИАЛИЗАЦИЯ НА ПИНОВЕТЕ (21 и 22) ---
-# DT=21, SCK=22
-hx = HX711(d_out=Pin(21), pd_sck=Pin(22))
-hx.set_scale(CALIBRATION_FACTOR)
+dout = Pin(21, Pin.IN)
+pd_sck = Pin(22, Pin.OUT)
 
-# --- ФУНКЦИЯ ЗА WIFI ---
+
+BASE_RAW = 141900   
+FACTOR = 110.3      
+OFFSET = 48         # Тв
+
+def read_hx711():
+    data = 0
+    timeout = 0
+    # Чакаме сензора да е готов (dout трябва да стане 0)
+    while dout.value() == 1:
+        timeout += 1
+        if timeout > 10000: return None
+    
+    # Четене на 24-те бита данни
+    for i in range(24):
+        pd_sck.value(1)
+        time.sleep_us(1)
+        data = (data << 1) | dout.value()
+        pd_sck.value(0)
+        time.sleep_us(1)
+    
+    # 25-ти импулс (Gain 128)
+    pd_sck.value(1)
+    time.sleep_us(1)
+    pd_sck.value(0)
+    
+    # Оправяне на знака за 24-битово число
+    if data & 0x800000:
+        data -= 0x1000000
+    return data
+
+def get_clean_average(samples=10):
+    values = []
+    for _ in range(samples):
+        v = read_hx711()
+        if v is not None:
+            # Филтър за шум: взимаме само стойности в реални граници
+            if 100000 < v < 200000:
+                values.append(v)
+        time.sleep_ms(10)
+    
+    if not values:
+        return BASE_RAW
+    return sum(values) / len(values)
+
 def connect_wifi():
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     if not wlan.isconnected():
-        print('Свързване към WiFi...')
+        print("Свързване към WiFi...")
         wlan.connect(WIFI_SSID, WIFI_PASS)
-        
-        # Опитва се да се свърже в продължение на 10 секунди
-        attempt = 0
-        while not wlan.isconnected() and attempt < 10:
+        # Изчакване до 10 секунди за връзка
+        for _ in range(10):
+            if wlan.isconnected(): break
             time.sleep(1)
-            attempt += 1
-            print("Опит {}...".format(attempt))
-            
-    if wlan.isconnected():
-        print('WiFi Свързан!')
-        print('IP адрес:', wlan.ifconfig()[0])
-        return True
-    else:
-        print('Грешка: WiFi не може да се свърже!')
-        return False
+    print("WiFi статус:", wlan.isconnected())
 
-def get_stable_reading(samples=100):
-    """ Взима средно аритметично от 100 сигнала за стабилност """
-    total = 0
-    for _ in range(samples):
-        total += hx.get_units(1)
-        time.sleep_ms(5) # Малка пауза за по-добро четене
-    return total / samples
-
-# --- СТАРТИРАНЕ ---
-print("Системата се стартира...")
+# --- СТАРТ ---
 connect_wifi()
-print("Зануляване... Махни всичко от кантара!")
-hx.tare() 
+print("Системата стартира с корекция +{}...".format(OFFSET))
 
 while True:
-    # Проверка дали интернетът още е там
-    wlan = network.WLAN(network.STA_IF)
-    if not wlan.isconnected():
-        connect_wifi()
-
     try:
-        # 1. Измерване (Average 100)
-        avg_weight = get_stable_reading(100)
+        # 1. Взимаме средно от 10 измервания
+        raw_val = get_clean_average(10)
         
-        # 2. Логика за водата
-        current_water_weight = avg_weight - CUP_EMPTY
-        percent = (current_water_weight / WATER_FULL_CAPACITY) * 100
-        percent = min(100, max(0, percent)) 
+        # 2. Изчисляваме теглото по формула
+        diff = raw_val - BASE_RAW
+        weight_calculated = (diff / FACTOR) + 192
         
-        print("Тегло: {:.1f}g | Процент: {:.1f}%".format(avg_weight, percent))
+        # 3. Прилагаме твоята корекция
+        final_weight = weight_calculated + OFFSET
+        
+        # 4. Смятаме процентите (192г до 366г -> общо 174г)
+        percent = ((final_weight - 192) / 174) * 100
+        percent = max(0, min(100, percent)) # Ограничаваме от 0 до 100%
+        
+        print("Raw: {:.0f} | Тегло: {:.1f}g | Ниво: {:.1f}%".format(raw_val, final_weight, percent))
 
-        # 3. Пращане към Firebase
-        # Пътят е: users / UID / waterLevel
-        url = "{}/users/{}/waterLevel.json".format(FIREBASE_URL, USER_UID)
-        
-        # Изпращаме само процента като число
-        response = urequests.put(url, json=round(percent, 1))
-        
-        if response.status_code == 200:
+        # 5. Изпращане към Firebase
+        wlan = network.WLAN(network.STA_IF)
+        if wlan.isconnected():
+            url = "{}/users/{}/waterLevel.json".format(FIREBASE_URL, USER_UID)
+            response = urequests.put(url, json=round(percent, 1))
+            response.close()
             print("Изпратено успешно!")
         else:
-            print("Firebase грешка:", response.status_code)
-        
-        response.close()
+            connect_wifi()
 
     except Exception as e:
         print("Грешка:", e)
 
-    # Време за изчакване (10 минути = 600 сек)
-    # За теста го направи на 10, после го върни на 600
-    print("Спя за 10 минути...")
-    time.sleep(30)
+    # Време между измерванията (10 секунди за тест)
+    # За реална работа промени на 600 (10 минути)
+    time.sleep(10)
